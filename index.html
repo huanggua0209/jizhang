@@ -274,6 +274,7 @@ function defaultDB(){
             {id:uid(), name:'信用卡', type:'credit', icon:'💳', limit:0, balance:0, billDay:5, dueDay:23},
             {id:uid(), name:'借呗', type:'jiebei', icon:'💰', limit:0, balance:0, billDay:1, dueDay:20} ],
     txs:[],
+    receivables:[],
     cats:{ expense:CAT_EXPENSE.map(([n,e])=>({n,e})), income:CAT_INCOME.map(([n,e])=>({n,e})) },
     meta:{ created:Date.now() }
   };
@@ -292,7 +293,9 @@ const Acc = {
   byId(id){ return S.db.accounts.find(a=>a.id===id) || S.db.debts.find(a=>a.id===id); },
   totalCash(){ return S.db.accounts.reduce((s,a)=>s+(+a.balance||0),0); },
   totalDebt(){ return S.db.debts.reduce((s,d)=>s+(+d.balance||0),0); },
-  net(){ return Acc.totalCash()-Acc.totalDebt(); }
+  recvList(){ return S.db.receivables || []; },
+  totalRecv(){ return Acc.recvList().reduce((s,r)=>s+(+r.amount||0),0); },
+  net(){ return Acc.totalCash()+Acc.totalRecv()-Acc.totalDebt(); }
 };
 
 function addTx(tx){
@@ -314,6 +317,16 @@ function applyTx(tx, sign){
     if(t) t.balance = round2((+t.balance||0) + amt);
   } else if(tx.kind==='debt_use'){          // 用信用卡/花呗消费：欠款增加
     const d=getD(tx.debt); if(d) d.balance = round2((+d.balance||0) + amt);
+  } else if(tx.kind==='lend'){              // 借出：账户减少 + 应收增加
+    const a=getA(tx.account);
+    const r=(S.db.receivables||[]).find(x=>x.id===tx.recv);
+    if(a) a.balance = round2((+a.balance||0) - amt);
+    if(r) r.amount = round2((+r.amount||0) + amt);
+  } else if(tx.kind==='collect'){           // 收回：账户增加 + 应收减少
+    const a=getA(tx.account);
+    const r=(S.db.receivables||[]).find(x=>x.id===tx.recv);
+    if(a) a.balance = round2((+a.balance||0) + amt);
+    if(r) r.amount = round2(Math.max(0,(+r.amount||0) - amt));
   } else if(tx.kind==='repay'){             // 还款：账户减少 + 欠款减少
     const a=getA(tx.account), d=getD(tx.debt);
     if(a) a.balance = round2((+a.balance||0) - amt);
@@ -417,8 +430,9 @@ function viewHome(){
     <div class="lab">净存款（资产 − 负债）</div>
     <div class="big">¥${fmt(Acc.net())}</div>
     <div class="row">
-      <div><div class="k">总资产</div><div class="v">¥${fmt(Acc.totalCash())}</div></div>
-      <div><div class="k">总负债</div><div class="v">¥${fmt(Acc.totalDebt())}</div></div>
+      <div><div class="k">账户余额</div><div class="v">¥${fmt(Acc.totalCash())}</div></div>
+      <div><div class="k">应收</div><div class="v">¥${fmt(Acc.totalRecv())}</div></div>
+      <div><div class="k">负债</div><div class="v">¥${fmt(Acc.totalDebt())}</div></div>
     </div>`);
   w.appendChild(hero);
 
@@ -474,8 +488,10 @@ function txRow(t){
   else if(t.kind==='transfer'){ title='转账'; sub=accName+' → '+((Acc.byId(t.to)||{}).name||''); amt=fmt(t.amount); }
   else if(t.kind==='debt_use'){ title=(Acc.byId(t.debt)||{}).name+' 消费'; sub=t.note||t.cat||''; amt='+'+fmt(t.amount); cls='expense'; }
   else if(t.kind==='repay'){ title='还款 · '+(Acc.byId(t.debt)||{}).name; sub='从 '+(accName||'账户'); amt='-'+fmt(t.amount); }
+  else if(t.kind==='lend'){ title='借出 · '+((S.db.receivables||[]).find(x=>x.id===t.recv)||{}).name||'应收'; sub=(t.note||accName); amt='-'+fmt(t.amount); }
+  else if(t.kind==='collect'){ title='收回 · '+((S.db.receivables||[]).find(x=>x.id===t.recv)||{}).name||'应收'; sub='到 '+(accName||'账户'); amt='+'+fmt(t.amount); cls='income'; }
   const icoCls = t.kind==='income'?'ic g':(t.kind==='expense'||t.kind==='debt_use'?'ic r':'ic');
-  const ico = t.kind==='transfer'?'🔁':(t.kind==='repay'?'💳':catIcon(t));
+  const ico = t.kind==='transfer'?'🔁':(t.kind==='repay'?'💳':(t.kind==='lend'?'🤝':(t.kind==='collect'?'💰':catIcon(t))));
   r.innerHTML = `<div class="${icoCls}">${ico}</div>
     <div class="main"><div class="t1">${esc(title)}</div><div class="t2">${esc(t.date)}${sub?' · '+esc(sub):''}</div></div>
     <div class="amt ${cls}">${amt}</div>`;
@@ -747,8 +763,9 @@ function viewStats(){
 function viewAccounts(){
   const w = el('div');
   w.appendChild(el('div','hero',`
-    <div class="lab">净存款</div><div class="big">¥${fmt(Acc.net())}</div>
-    <div class="row"><div><div class="k">资产</div><div class="v">¥${fmt(Acc.totalCash())}</div></div>
+    <div class="lab">净存款（账户 + 应收 − 负债）</div><div class="big">¥${fmt(Acc.net())}</div>
+    <div class="row"><div><div class="k">账户</div><div class="v">¥${fmt(Acc.totalCash())}</div></div>
+    <div><div class="k">应收</div><div class="v">¥${fmt(Acc.totalRecv())}</div></div>
     <div><div class="k">负债</div><div class="v">¥${fmt(Acc.totalDebt())}</div></div></div>`));
 
   // 资产账户
@@ -786,7 +803,117 @@ function viewAccounts(){
   addD.onclick=()=>editDebt(null);
   dcard.appendChild(addD);
   w.appendChild(dcard);
+
+  // 应收款
+  w.appendChild(el('div','sec-title','<span>应收款（别人欠我的）</span><span>每月可部分收回</span>'));
+  const rcard = el('div','card');
+  const recv = S.db.receivables || [];
+  if(!recv.length) rcard.appendChild(el('div','','<div style="color:#9CA3AF;font-size:13px;padding:10px 4px">暂无应收款</div>'));
+  recv.forEach(r=>{
+    const row = el('div','acct',
+      `<div class="ic g">🤝</div>
+       <div class="nm"><div class="a">${esc(r.name)}</div>
+       <div class="b">${esc(r.note||'')}${r.note?' · ':''}自 ${esc(r.date||'')}</div></div>
+       <div class="bal income">应收 ¥${fmt(r.amount)}</div>`);
+    row.onclick=()=>recvSheet(r);
+    rcard.appendChild(row);
+  });
+  const addR = el('button','btn','＋ 添加应收');
+  addR.style.marginTop='12px';
+  addR.onclick=()=>editRecv(null);
+  rcard.appendChild(addR);
+  w.appendChild(rcard);
   return w;
+}
+
+/* ---------- 应收款 ---------- */
+function editRecv(r){
+  const box=el('div','sheet');
+  const isNew=!r;
+  const cur = r || {id:uid(), name:'', amount:0, note:'', date:today()};
+  box.innerHTML=`<div class="inner">
+    <h3>${isNew?'添加应收':'编辑应收'}</h3>
+    <input class="inp" id="rvName" placeholder="谁欠你（如：张三）" value="${esc(cur.name)}">
+    <input class="inp" id="rvAmt" inputmode="decimal" placeholder="金额" value="${(+cur.amount||0)}">
+    <input class="inp" id="rvNote" placeholder="备注（可不填）" value="${esc(cur.note||'')}">
+    ${isNew?`
+    <div class="field" style="margin-top:6px">
+      <label style="width:auto;flex:1">从账户扣（钱已经借出去了）</label>
+      <input type="checkbox" id="rvFromAcc" style="width:20px;height:20px">
+    </div>
+    <div class="field"><label>从哪个</label>
+      <select id="rvAcc">${S.db.accounts.map(a=>`<option value="${a.id}">${esc(a.name)}（¥${fmt(a.balance)}）</option>`).join('')}</select>
+    </div>
+    <div class="help">勾选后：对应账户余额减少，这笔钱变成"应收"；不勾选则只是登记一笔应收，不动账户。</div>`:''}
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn ghost" id="rvCancel" style="flex:1">取消</button>
+      ${isNew?'':'<button class="btn warn" id="rvDel" style="flex:1">删除</button>'}
+      <button class="btn" id="rvOk" style="flex:1">保存</button>
+    </div></div>`;
+  $('#sheetHost').appendChild(box);
+  box.onclick=e=>{ if(e.target===box) box.remove(); };
+  box.querySelector('#rvCancel').onclick=()=>box.remove();
+  box.querySelector('#rvOk').onclick=()=>{
+    const name=(box.querySelector('#rvName').value||'').trim();
+    const amt=round2(parseFloat(box.querySelector('#rvAmt').value||'0')||0);
+    if(!name){ toast('请填名字'); return; }
+    if(amt<=0){ toast('金额要大于 0'); return; }
+    const note=(box.querySelector('#rvNote').value||'').trim();
+    if(isNew){
+      S.db.receivables = S.db.receivables || [];
+      const cb = box.querySelector('#rvFromAcc');
+      const fromAcc = !!(cb && cb.checked);
+      // 勾了「从账户扣」：应收先记 0，由 lend 交易把金额加进去，避免重复计算
+      S.db.receivables.push({id:cur.id, name, amount: fromAcc ? 0 : amt, note, date:today()});
+      if(fromAcc){
+        const acc = box.querySelector('#rvAcc').value;
+        addTx({id:uid(), kind:'lend', date:today(), amount:amt, account:acc, recv:cur.id, note:name});
+      } else { save(); }
+    } else {
+      Object.assign(r, {name, amount:amt, note});
+      save();
+    }
+    box.remove(); render(); toast('已保存');
+  };
+  const del=box.querySelector('#rvDel');
+  if(del) del.onclick=()=>{
+    if(confirm('删除这条应收？已有收款记录不会被删除')){
+      S.db.receivables = (S.db.receivables||[]).filter(x=>x.id!==r.id);
+      save(); box.remove(); render();
+    }
+  };
+}
+
+function recvSheet(r){
+  const box=el('div','sheet');
+  box.innerHTML=`<div class="inner">
+    <h3>${esc(r.name)} · 应收 ¥${fmt(r.amount)}</h3>
+    <div class="help" style="margin-top:0">收回一笔：钱进账户，应收减少。不算收入，不影响月度收支统计。</div>
+    <input class="inp" id="rqAmt" inputmode="decimal" placeholder="这次收回多少" value="${(+r.amount||0)}">
+    <div class="field" style="margin-top:6px"><label>收到哪</label>
+      <select id="rqAcc">${S.db.accounts.map(a=>`<option value="${a.id}">${esc(a.name)}（¥${fmt(a.balance)}）</option>`).join('')}</select>
+    </div>
+    <input class="inp" id="rqNote" placeholder="备注（可不填）">
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn ghost" id="rqCancel" style="flex:1">关闭</button>
+      <button class="btn" id="rqOk" style="flex:1">确认收回</button>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:10px">
+      <button class="btn ghost" id="rqEdit" style="flex:1">编辑应收</button>
+    </div></div>`;
+  $('#sheetHost').appendChild(box);
+  box.onclick=e=>{ if(e.target===box) box.remove(); };
+  box.querySelector('#rqCancel').onclick=()=>box.remove();
+  box.querySelector('#rqEdit').onclick=()=>{ box.remove(); editRecv(r); };
+  box.querySelector('#rqOk').onclick=()=>{
+    const amt=round2(parseFloat(box.querySelector('#rqAmt').value||'0')||0);
+    if(amt<=0){ toast('金额要大于 0'); return; }
+    if(amt > (+r.amount||0)+0.001 && !confirm('收回金额大于应收（¥'+fmt(r.amount)+'），继续？')) return;
+    addTx({id:uid(), kind:'collect', date:today(), amount:amt,
+           account:box.querySelector('#rqAcc').value, recv:r.id,
+           note:(box.querySelector('#rqNote').value||'').trim()});
+    box.remove(); render(); toast('已收回 ¥'+fmt(amt));
+  };
 }
 
 function editAccount(a){

@@ -283,7 +283,7 @@ function defaultDB(){
 /* ============================================================
    4. 全局状态
 ============================================================ */
-const S = { db:null, pw:null, vault:null, view:'home', rec:{type:'expense',account:null,cat:null,date:today()}, stat:{range:'month',anchor:new Date()}, cfg:Store.getCfg() };
+const S = { db:null, pw:null, vault:null, view:'home', rec:{type:'expense',account:null,cat:null,date:today()}, stat:{range:'month',anchor:new Date(),day:today()}, cfg:Store.getCfg() };
 
 /* ============================================================
    5. 业务计算
@@ -696,26 +696,46 @@ function viewStats(){
   const y = now.getFullYear(), m = now.getMonth()+1;
 
   // 周期切换（上一月/下一月、上一年/下一年）
-  const unit = S.stat.range==='year' ? '年' : '月';
+  const isDay = S.stat.range==='day';
+  const unit = S.stat.range==='year' ? '年' : (isDay ? '天' : '月');
+  const center = isDay ? (S.stat.day||today())
+    : (S.stat.range==='year' ? y+'年' : (y+'-'+String(m).padStart(2,'0')));
   const navRow = el('div','sec-title');
   navRow.style.alignItems='center';
-  navRow.innerHTML = `<button class="btn ghost" id="pv" style="padding:4px 12px;font-size:13px">‹ 上一${unit}</button>
-    <span style="font-weight:600;color:var(--text)">${S.stat.range==='year'? y+'年' : (y+'-'+String(m).padStart(2,'0'))}</span>
-    <button class="btn ghost" id="nx" style="padding:4px 12px;font-size:13px">下一${unit} ›</button>`;
+  navRow.innerHTML = `<button class="btn ghost" id="pv" style="padding:4px 12px;font-size:13px">‹ 上${unit==='天'?'一天':'一'+unit}</button>
+    <span style="font-weight:600;color:var(--text)">${center}</span>
+    <button class="btn ghost" id="nx" style="padding:4px 12px;font-size:13px">下${unit==='天'?'一天':'一'+unit} ›</button>`;
   w.appendChild(navRow);
+  if(S.stat.range==='day'){
+    const dc = el('div','card');
+    dc.innerHTML = `<div class="field" style="padding:4px 2px"><label>看哪天</label>
+      <input type="date" id="statDay" value="${S.stat.day||today()}"></div>`;
+    w.appendChild(dc);
+    setTimeout(()=>{ const i=document.getElementById('statDay'); if(i) i.onchange=e=>{ S.stat.day=e.target.value||today(); render(); }; },0);
+  }
   navRow.querySelector('#pv').onclick = ()=>{
+    if(S.stat.range==='day'){
+      const d=new Date(S.stat.day||today()); d.setDate(d.getDate()-1);
+      S.stat.day=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      render(); return;
+    }
     const a = new Date(S.stat.anchor||new Date());
     if(S.stat.range==='year') a.setFullYear(a.getFullYear()-1); else a.setMonth(a.getMonth()-1);
     S.stat.anchor=a; render();
   };
   navRow.querySelector('#nx').onclick = ()=>{
+    if(S.stat.range==='day'){
+      const d=new Date(S.stat.day||today()); d.setDate(d.getDate()+1);
+      S.stat.day=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      render(); return;
+    }
     const a = new Date(S.stat.anchor||new Date());
     if(S.stat.range==='year') a.setFullYear(a.getFullYear()+1); else a.setMonth(a.getMonth()+1);
     S.stat.anchor=a; render();
   };
 
   let filtered=[], label='';
-  if(S.stat.range==='day'){ const d=today(); filtered=S.db.txs.filter(t=>t.date===d); label=d; }
+  if(S.stat.range==='day'){ const d=S.stat.day||today(); filtered=S.db.txs.filter(t=>t.date===d); label=d; }
   else if(S.stat.range==='month'){ const ym=`${y}-${String(m).padStart(2,'0')}`; filtered=S.db.txs.filter(t=>t.date.startsWith(ym)); label=ym; }
   else { filtered=S.db.txs.filter(t=>t.date.startsWith(String(y)+'-')); label=String(y)+'年'; }
 
@@ -790,6 +810,16 @@ function viewStats(){
     const all=[...bars.children]; const max=Math.max(...all.map(b=>+b.dataset.v||0),1);
     all.forEach(b=>{ const v=+b.dataset.v||0; b.style.height = v>0 ? Math.max(4, v/max*96)+'px' : '0px'; });
   },0);
+
+  // 当天明细（仅按日）
+  if(S.stat.range==='day'){
+    const dc = el('div','card');
+    dc.appendChild(el('div','','<div style="font-weight:600;margin-bottom:6px">这天花了什么</div>'));
+    const list=[...filtered].sort((a,b)=>a.date.localeCompare(b.date));
+    if(!list.length){ dc.appendChild(el('div','help','这天没有记录')); }
+    else list.forEach(t=>dc.appendChild(txRow(t)));
+    w.appendChild(dc);
+  }
 
   // 日均
   const days = S.stat.range==='day'?1:(S.stat.range==='month'? new Date(y,m,0).getDate() : 365);

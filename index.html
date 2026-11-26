@@ -322,6 +322,11 @@ function applyTx(tx, sign){
     const r=(S.db.receivables||[]).find(x=>x.id===tx.recv);
     if(a) a.balance = round2((+a.balance||0) - amt);
     if(r) r.amount = round2((+r.amount||0) + amt);
+  } else if(tx.kind==='advance'){           // 代付：负债增加 + 应收增加（不算支出）
+    const d=getD(tx.debt);
+    const r=(S.db.receivables||[]).find(x=>x.id===tx.recv);
+    if(d) d.balance = round2((+d.balance||0) + amt);
+    if(r) r.amount = round2((+r.amount||0) + amt);
   } else if(tx.kind==='collect'){           // 收回：账户增加 + 应收减少
     const a=getA(tx.account);
     const r=(S.db.receivables||[]).find(x=>x.id===tx.recv);
@@ -490,8 +495,9 @@ function txRow(t){
   else if(t.kind==='repay'){ title='还款 · '+(Acc.byId(t.debt)||{}).name; sub='从 '+(accName||'账户'); amt='-'+fmt(t.amount); }
   else if(t.kind==='lend'){ title='借出 · '+((S.db.receivables||[]).find(x=>x.id===t.recv)||{}).name||'应收'; sub=(t.note||accName); amt='-'+fmt(t.amount); }
   else if(t.kind==='collect'){ title='收回 · '+((S.db.receivables||[]).find(x=>x.id===t.recv)||{}).name||'应收'; sub='到 '+(accName||'账户'); amt='+'+fmt(t.amount); cls='income'; }
+  else if(t.kind==='advance'){ title='代付 · '+(((S.db.receivables||[]).find(x=>x.id===t.recv)||{}).name)||'应收'; sub=(Acc.byId(t.debt)||{}).name+'（不计支出）'; amt=fmt(t.amount); }
   const icoCls = t.kind==='income'?'ic g':(t.kind==='expense'||t.kind==='debt_use'?'ic r':'ic');
-  const ico = t.kind==='transfer'?'🔁':(t.kind==='repay'?'💳':(t.kind==='lend'?'🤝':(t.kind==='collect'?'💰':catIcon(t))));
+  const ico = t.kind==='transfer'?'🔁':(t.kind==='repay'?'💳':(t.kind==='lend'?'🤝':(t.kind==='collect'?'💰':(t.kind==='advance'?'🧾':catIcon(t)))));
   r.innerHTML = `<div class="${icoCls}">${ico}</div>
     <div class="main"><div class="t1">${esc(title)}</div><div class="t2">${esc(t.date)}${sub?' · '+esc(sub):''}</div></div>
     <div class="amt ${cls}">${amt}</div>`;
@@ -561,6 +567,31 @@ function viewRecord(){
     f.innerHTML = `<label>用哪个</label>
       <select id="selDebt2">${S.db.debts.map(d=>`<option value="${d.id}">${esc(d.name)}（欠 ¥${fmt(d.balance)}）</option>`).join('')}</select>`;
     card.appendChild(f);
+
+    const recvList = S.db.receivables || [];
+    const ck = el('div','field');
+    ck.innerHTML = `<label style="width:auto;flex:1">帮别人代付（计入应收，不算我的支出）</label>
+      <input type="checkbox" id="advChk" style="width:20px;height:20px" ${recvList.length?'':'disabled'}>`;
+    card.appendChild(ck);
+
+    const wrap = el('div','field');
+    wrap.id = 'advWrap';
+    wrap.style.display = 'none';
+    wrap.innerHTML = `<label>记谁欠你</label>
+      <select id="advRecv">${recvList.map(r=>`<option value="${r.id}">${esc(r.name)}（应收 ¥${fmt(r.amount)}）</option>`).join('')}</select>`;
+    card.appendChild(wrap);
+
+    const hin = el('div','help');
+    hin.style.margin = '2px 4px 8px';
+    hin.innerHTML = recvList.length
+      ? '勾上后：花呗欠款增加，同时这个人欠你的金额增加，<b>不计入本月支出</b>。'
+      : '还没有应收款。先去「账户 → 应收款」建一个（比如"张三·亲情卡"），再回来勾选。';
+    card.appendChild(hin);
+
+    setTimeout(()=>{
+      const cb = document.getElementById('advChk');
+      if(cb) cb.onchange = ()=>{ document.getElementById('advWrap').style.display = cb.checked ? 'flex' : 'none'; };
+    }, 0);
   } else {
     const fieldAcc = el('div','field');
     fieldAcc.innerHTML = `<label>${R.type==='repay'?'还款账户':'账户'}</label>
@@ -600,7 +631,16 @@ function viewRecord(){
     if(!amt || amt<=0){ toast('请输入金额'); return; }
     const tx = {id:uid(), date:$('#selDate').value||today(), amount:round2(amt), note:($('#note').value||'').trim()};
     if(R.type==='expense'||R.type==='income'){ tx.kind=R.type; tx.cat=R.cat; tx.account=$('#selAcc').value; }
-    else if(R.type==='debt_use'){ tx.kind='debt_use'; tx.cat=R.cat; tx.debt=$('#selDebt2').value; }
+    else if(R.type==='debt_use'){
+      const cb = document.getElementById('advChk');
+      if(cb && cb.checked){
+        const rv = document.getElementById('advRecv');
+        if(!rv || !rv.value){ toast('先去账户页建一个应收款'); return; }
+        tx.kind='advance'; tx.cat=R.cat; tx.debt=$('#selDebt2').value; tx.recv=rv.value;
+      } else {
+        tx.kind='debt_use'; tx.cat=R.cat; tx.debt=$('#selDebt2').value;
+      }
+    }
     else if(R.type==='transfer'){ tx.kind='transfer'; tx.account=$('#selAcc').value; tx.to=$('#selTo').value;
       if(tx.account===tx.to){ toast('转出转入不能相同'); return; } }
     else if(R.type==='repay'){ tx.kind='repay'; tx.account=$('#selAcc').value; tx.debt=$('#selDebt').value;
